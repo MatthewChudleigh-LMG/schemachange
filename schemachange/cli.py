@@ -22,7 +22,7 @@ from cryptography.hazmat.primitives.asymmetric import dsa
 from cryptography.hazmat.primitives import serialization
 
 # Set a few global variables here
-_schemachange_version = '3.4.1'
+_schemachange_version = '3.4.2'
 _config_file_name = 'schemachange-config.yml'
 _metadata_database_name = 'METADATA'
 _metadata_schema_name = 'SCHEMACHANGE'
@@ -247,8 +247,7 @@ def deploy_command(config):
         continue
 
     print("Applying change script %s" % script['script_name'])
-    if not config['dry-run']:
-      apply_change_script(script, content, config['vars'], config['snowflake-database'], change_history_table, snowflake_session_parameters, config['autocommit'], config['verbose'])
+    apply_change_script(script, content, config['vars'], config['snowflake-database'], change_history_table, snowflake_session_parameters, config['autocommit'], config['verbose'], config['dry-run'])
 
     scripts_applied += 1
 
@@ -634,7 +633,7 @@ def fetch_change_history(change_history_table, snowflake_session_parameters, aut
 
   return change_history
 
-def apply_change_script(script, script_content, vars, default_database, change_history_table, snowflake_session_parameters, autocommit, verbose):
+def apply_change_script(script, script_content, vars, default_database, change_history_table, snowflake_session_parameters, autocommit, verbose, dry_run):
   # Define a few other change related variables
   checksum = hashlib.sha224(script_content.encode('utf-8')).hexdigest()
   execution_time = 0
@@ -645,13 +644,19 @@ def apply_change_script(script, script_content, vars, default_database, change_h
     start = time.time()
     session_parameters = snowflake_session_parameters.copy()
     session_parameters["QUERY_TAG"] += ";%s" % script['script_name']
+    if dry_run:
+      script_statements = script_content.split(";")
+      script_content = "\n".join(map(lambda script_statement: "%s;" % script_statement if script_statement.strip().lower().startswith("use ") else "EXPLAIN %s;" % script_statement.strip(), script_statements))
+      print("Dry Run:\n%s" % script_content)
+
     execute_snowflake_query(default_database, script_content, session_parameters, autocommit, verbose)
     end = time.time()
     execution_time = round(end - start)
 
   # Finally record this change in the change history table
-  query = "INSERT INTO {0}.{1} (VERSION, DESCRIPTION, SCRIPT, SCRIPT_TYPE, CHECKSUM, EXECUTION_TIME, STATUS, INSTALLED_BY, INSTALLED_ON) values ('{2}','{3}','{4}','{5}','{6}',{7},'{8}','{9}',CURRENT_TIMESTAMP);".format(change_history_table['schema_name'], change_history_table['table_name'], script['script_version'], script['script_description'], script['script_name'], script['script_type'], checksum, execution_time, status, os.environ["SNOWFLAKE_USER"])
-  execute_snowflake_query(change_history_table['database_name'], query, snowflake_session_parameters, autocommit, verbose)
+  if not dry_run:
+    query = "INSERT INTO {0}.{1} (VERSION, DESCRIPTION, SCRIPT, SCRIPT_TYPE, CHECKSUM, EXECUTION_TIME, STATUS, INSTALLED_BY, INSTALLED_ON) values ('{2}','{3}','{4}','{5}','{6}',{7},'{8}','{9}',CURRENT_TIMESTAMP);".format(change_history_table['schema_name'], change_history_table['table_name'], script['script_version'], script['script_description'], script['script_name'], script['script_type'], checksum, execution_time, status, os.environ["SNOWFLAKE_USER"])
+    execute_snowflake_query(change_history_table['database_name'], query, snowflake_session_parameters, autocommit, verbose)
 
 def extract_config_secrets(config: Dict[str, Any]) -> Set[str]:
   """
